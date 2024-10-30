@@ -7,53 +7,65 @@ from typing import List, Dict, Any
 
 class GitHubScraper:
     def __init__(self, token: str):
+        # Initialize GitHub API authorization headers
         self.headers = {
             'Authorization': f'token {token}',
             'Accept': 'application/vnd.github.v3+json'
         }
-        self.base_url = 'https://api.github.com'
+        self.base_url = 'https://api.github.com'  # Base URL for GitHub API requests
         
     def _make_request(self, url: str, params: Dict = None) -> Dict:
-        """Make a request to GitHub API with rate limit handling"""
+        """
+        Make a request to GitHub API with rate limit handling.
+        If rate limit is exceeded, wait until reset time and retry.
+        """
         response = requests.get(url, headers=self.headers, params=params)
         
+        # Handle rate limit by checking reset time and retrying if necessary
         if response.status_code == 403 and 'rate limit exceeded' in response.text.lower():
             reset_time = int(response.headers['X-RateLimit-Reset'])
             sleep_time = reset_time - time.time() + 1
             if sleep_time > 0:
                 time.sleep(sleep_time)
             return self._make_request(url, params)
-            
-        response.raise_for_status()
-        return response.json()
-    
+        
+        response.raise_for_status()  # Raise exception for HTTP errors
+        return response.json()  # Return JSON response
+
     def clean_company_name(self, company: str) -> str:
-        """Clean company name according to specifications"""
+        """
+        Clean and format company name by removing leading '@' and converting to uppercase.
+        """
         if not company:
             return ""
-        company = str(company).strip()
+        company = str(company).strip()  # Remove whitespace
         if company.startswith('@'):
-            company = company[1:]
-        return company.upper()
-    
+            company = company[1:]  # Remove '@' if it exists
+        return company.upper()  # Convert to uppercase for consistency
+
     def search_users(self, location: str, min_followers: int) -> List[Dict]:
-        """Search for users in a specific location with minimum followers"""
+        """
+        Search for GitHub users in a specified location with a minimum number of followers.
+        Retrieves additional user details.
+        """
         users = []
         page = 1
         
+        # Paginate through results until no users are returned
         while True:
             params = {
                 'q': f'location:{location} followers:>{min_followers}',
                 'type': 'user',
                 'page': page,
-                'per_page': 100
+                'per_page': 100  # Max results per page
             }
             
             response = self._make_request(f'{self.base_url}/search/users', params)
             
             if not response['items']:
-                break
-                
+                break  # Exit loop if no more users
+            
+            # Retrieve detailed data for each user
             for user in response['items']:
                 user_data = self._make_request(user['url'])
                 users.append({
@@ -70,15 +82,19 @@ class GitHubScraper:
                     'created_at': user_data.get('created_at', '')
                 })
             
-            page += 1
-            
+            page += 1  # Move to the next page of results
+        
         return users
-    
+
     def get_user_repositories(self, username: str, max_repos: int = 500) -> List[Dict]:
-        """Get repositories for a specific user"""
+        """
+        Retrieve repositories for a specified user, limited by max_repos.
+        Includes key repository details.
+        """
         repos = []
         page = 1
         
+        # Paginate through repositories until max_repos is reached or no more repos found
         while len(repos) <= max_repos:
             params = {
                 'sort': 'pushed',
@@ -90,13 +106,11 @@ class GitHubScraper:
             response = self._make_request(f'{self.base_url}/users/{username}/repos', params)
             
             if not response:
-                break
-                
+                break  # Exit loop if no more repositories
+            
+            # Append each repository's details to the repos list
             for repo in response:
-                # Handle the case where license is None
-                license_key = ''
-                if repo.get('license') is not None:
-                    license_key = repo['license'].get('key', '')
+                license_key = repo['license'].get('key', '') if repo.get('license') else ''
                 
                 repos.append({
                     'login': username,
@@ -110,86 +124,37 @@ class GitHubScraper:
                     'license_name': license_key
                 })
             
-            page += 1
+            page += 1  # Move to the next page of results
             
             if len(response) < params['per_page']:
-                break
-            
+                break  # Exit if fewer results than requested (last page)
+        
         return repos[:max_repos]
 
 def main():
-    # Replace with your GitHub token
+    # Retrieve GitHub token from environment variable
     token = os.getenv('GITHUB_TOKEN')
     if not token:
         raise ValueError("Please set GITHUB_TOKEN environment variable")
-        
+    
     scraper = GitHubScraper(token)
     
-    # Get users from Chennai with >50 followers
+    # Search for users in Chennai with more than 50 followers
     users = scraper.search_users('Chennai', 50)
     
-    # Get repositories for each user
+    # Retrieve repositories for each user and store results
     all_repos = []
     for user in users:
         user_repos = scraper.get_user_repositories(user['login'])
         all_repos.extend(user_repos)
     
-    # Create DataFrames
+    # Convert user and repository data to DataFrames
     users_df = pd.DataFrame(users)
     repos_df = pd.DataFrame(all_repos)
     
-    # Save to CSV
+    # Save DataFrames to CSV files
     users_df.to_csv('users.csv', index=False)
     repos_df.to_csv('repositories.csv', index=False)
-    
-    # Create README.md
-    readme_content = f"""# Chennai GitHub Users Analysis
-
-This repository contains data about GitHub users from Chennai with more than 50 followers and their repositories.
-
-## Data Files
-
-1. `users.csv`: Contains information about {len(users)} GitHub users from Chennai with more than 50 followers
-2. `repositories.csv`: Contains information about their public repositories
-3. `github_scraper.py`: Python script used to collect the data
-
-## Data Collection
-
-Data was collected on {datetime.now().strftime('%Y-%m-%d')} using the GitHub API v3.
-
-### Users Dataset Columns
-- login: GitHub user ID
-- name: Full name
-- company: Company name (cleaned and standardized)
-- location: User location
-- email: User email
-- hireable: Whether user is available for hire
-- bio: User bio
-- public_repos: Number of public repositories
-- followers: Number of followers
-- following: Number of users being followed
-- created_at: Account creation date
-
-### Repositories Dataset Columns
-- login: Repository owner's GitHub user ID
-- full_name: Repository full name
-- created_at: Repository creation date
-- stargazers_count: Number of stars
-- watchers_count: Number of watchers
-- language: Primary programming language
-- has_projects: Projects feature status
-- has_wiki: Wiki feature status
-- license_name: Repository license key
-
-## Usage
-To run the scraper:
-1. Set your GitHub token as environment variable: `export GITHUB_TOKEN='your_token'`
-2. Install requirements: `pip install requests pandas`
-3. Run the script: `python github_scraper.py`
-"""
-    
-    with open('README.md', 'w') as f:
-        f.write(readme_content)
 
 if __name__ == "__main__":
     main()
